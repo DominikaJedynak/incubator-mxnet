@@ -35,6 +35,7 @@
 #include <string>
 #include "quantize_v2-inl.h"
 #include "../nn/mkldnn/mkldnn_fully_connected-inl.h"
+#include "../subgraph/mkldnn/mkldnn_conv-inl.h"
 #include "../../common/utils.h"
 
 namespace mxnet {

@@ -91,6 +91,7 @@ static void ConvertWeightBias2MKLDNN(NDArray *weight, NDArray *bias, bool has_bi
                                      const mkldnn::memory::desc *bias_md,
                                      const int num_group, float data_scale,
                                      const std::vector<float> &weight_scales,
+                                     float shift, bool shifted_input=false,
                                      const bool submit = true) {
   MKLDNNStream *stream = MKLDNNStream::Get();
   const auto new_weight = NDArray(weight_md);
@@ -108,12 +109,15 @@ static void ConvertWeightBias2MKLDNN(NDArray *weight, NDArray *bias, bool has_bi
       mkldnn::reorder(weight_reorder_pd),
       {{MKLDNN_ARG_FROM, *default_weights_memory}, {MKLDNN_ARG_TO, *conv_weights_memory}});
   NDArray new_bias;
+  int32_t* new_bias_ptr;
   if (has_bias && data_scale) {
     std::vector<float> bias_scales(weight_scales.size());
     for (size_t c = 0; c < weight_scales.size(); ++c) {
       bias_scales[c] = weight_scales[c] * data_scale;
     }
     new_bias = NDArray(*bias_md);
+    new_bias_ptr = new_bias.data().dptr<int32_t>();
+
     const auto conv_bias_memory = new_bias.GetMKLDNNData();
     const int bias_mask = (bias_scales.size()) == 1 ? 0 : 1;
     mkldnn::primitive_attr bias_attr;
@@ -127,6 +131,26 @@ static void ConvertWeightBias2MKLDNN(NDArray *weight, NDArray *bias, bool has_bi
   }
   if (submit)
     stream->Submit();
+
+  // shifting bias to compensate shift added to data
+  if (shifted_input) {
+    int32_t shift_value = static_cast<int32_t>(std::round(shift));
+    CHECK_EQ(static_cast<size_t>(new_weight.shape()[0]), new_bias.shape().Size());
+
+    auto new_weight_reordered = new_weight.Reorder2Default();
+    int8_t* weight_ptr = new_weight_reordered.data().dptr<int8_t>();
+    
+    for (dim_t i = 0; i < new_weight.shape()[0]; i++) {   // correct for more optimal
+      for (dim_t j = 0; j < new_weight.shape()[1]; j++) {
+        for (dim_t k = 0; k < new_weight.shape()[2]; k++) {
+          for (dim_t l = 0; l < new_weight.shape()[3]; l++) {
+            new_bias_ptr[i] -= shift_value * (*weight_ptr++);
+          }
+        }
+      }
+    }
+  }
+
   *weight = new_weight;
   if (has_bias && data_scale) *bias = new_bias;
 }

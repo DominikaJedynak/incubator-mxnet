@@ -40,6 +40,9 @@ struct MKLDNNConvFusionParam {
 static inline bool IsOutputUInt8(const MKLDNNConvFusionParam& param) {
   bool result = false;
   const auto& mkldnn_param = param.full_conv_param.mkldnn_param;
+  if (mkldnn_param.shifted_output.has_value() && mkldnn_param.shifted_output.value()) {
+      return true;
+  }
   auto IsOutputUInt8Helper = [](const MKLDNNPostEltwiseParam &param) {
     return ((param.alg == mkldnn::algorithm::eltwise_relu && param.alpha == 0.f) ||
             param.alg == mkldnn::algorithm::eltwise_logistic ||

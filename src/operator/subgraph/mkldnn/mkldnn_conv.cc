@@ -152,6 +152,7 @@ void SgMKLDNNConvOperator::Forward(const OpContext &ctx,
   bool has_bias = mkldnn_param.with_bn || !conv_param.no_bias;
   NDArray data = inputs[in_data];
   NDArray output = mkldnn_param.with_sum ? inputs[in_sum] : outputs[kOut];
+  float shift_value = mkldnn_param.shift_value.has_value() ? mkldnn_param.shift_value.value() : 0.0;
 
   // Copy inputs[in_sum] into outputs[kOut] in case inplace optimization failed.
   if (mkldnn_param.with_sum) {
@@ -305,7 +306,9 @@ void SgMKLDNNConvOperator::Forward(const OpContext &ctx,
                              fwd_->GetPd().weights_desc(),
                              has_bias ? & bias_md : nullptr,
                              full_conv_param.conv_param.num_group,
-                             data_scale_, weight_scales_);
+                             data_scale_, weight_scales_, shift_value,
+                             mkldnn_param.shifted_input.has_value() ?
+                             mkldnn_param.shifted_input.value() : false);
     args_[MKLDNN_ARG_SRC] = *data.GetMKLDNNData();
     args_[MKLDNN_ARG_WEIGHTS] = *cached_weight_.GetMKLDNNData();
     if (has_bias) args_[MKLDNN_ARG_BIAS] = *cached_bias_.GetMKLDNNData();
@@ -348,8 +351,13 @@ void SgMKLDNNConvOperator::Forward(const OpContext &ctx,
   }
 
   if (mkldnn_param.quantized) {
-    *outputs[kMin].data().dptr<float>() = cached_output_min_;
-    *outputs[kMax].data().dptr<float>() = cached_output_max_;
+    if (mkldnn_param.shifted_output.has_value() && mkldnn_param.shifted_output.value()) {
+      *outputs[kMin].data().dptr<float>() = 0;
+      *outputs[kMax].data().dptr<float>() = cached_output_max_ - cached_output_min_;
+    } else {
+      *outputs[kMin].data().dptr<float>() = cached_output_min_;
+      *outputs[kMax].data().dptr<float>() = cached_output_max_;
+    }
   }
   if (mkldnn_param.with_sum) {
     auto out = const_cast<NDArray &>(outputs[kOut]);

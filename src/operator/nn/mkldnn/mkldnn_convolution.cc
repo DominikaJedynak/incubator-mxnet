@@ -29,6 +29,7 @@
 #include "./mkldnn_ops-inl.h"
 #include "./mkldnn_base-inl.h"
 #include "./mkldnn_convolution-inl.h"
+#include "../../quantization/quantization_utils.h"
 
 namespace mxnet {
 namespace op {
@@ -98,6 +99,14 @@ std::shared_ptr<mkldnn::convolution_forward::primitive_desc> GetConvFwdImpl(
   if (param.mkldnn_param.with_act) {
     const auto &act_param = param.act_param;
     ops.append_eltwise(act_param.scale, act_param.alg, act_param.alpha, act_param.beta);
+  }
+  if (param.mkldnn_param.shifted_output.has_value() &&
+      param.mkldnn_param.shifted_output.value()) {
+    auto max = param.mkldnn_param.max_calib_range.value();
+    auto min = param.mkldnn_param.min_calib_range.value();
+    float scale = GetQuantizeScale(mshadow::kInt8, min, max); //(mshadow::kUint8, 0, max - min);
+    float shift = -min * scale;
+    ops.append_eltwise(1.f, dnnl::algorithm::eltwise_linear, 1.f, shift);
   }
   if (param.mkldnn_param.with_sum) {
     ops.append_sum(param.sum_scale);

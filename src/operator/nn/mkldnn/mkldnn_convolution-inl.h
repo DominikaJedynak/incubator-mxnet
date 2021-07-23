@@ -45,6 +45,9 @@ struct MKLDNNConvParam : public dmlc::Parameter<MKLDNNConvParam> {
 
   dmlc::optional<float> min_calib_range;  // min float value calculated from calibration dataset
   dmlc::optional<float> max_calib_range;  // max float value calculated from calibration dataset
+  dmlc::optional<bool> shifted_output;
+  dmlc::optional<bool> shifted_input;
+  dmlc::optional<float> shift_value; //change to only have one?
 
   DMLC_DECLARE_PARAMETER(MKLDNNConvParam) {
     DMLC_DECLARE_FIELD(with_bn).set_default(false)
@@ -67,6 +70,15 @@ struct MKLDNNConvParam : public dmlc::Parameter<MKLDNNConvParam> {
     .describe("The maximum scalar value in the form of float32 obtained "
               "through calibration. If present, it will be used to by "
               "quantized convolution op to calculate primitive scale");
+    DMLC_DECLARE_FIELD(shifted_output)
+    .set_default(dmlc::optional<bool>())
+    .describe("Whether the quantized output of this node should be shifted to u8.");
+    DMLC_DECLARE_FIELD(shifted_input)
+    .set_default(dmlc::optional<bool>())
+    .describe("Whether the quantized input is shifted. If true, the bias needs to be recalculated.");
+    DMLC_DECLARE_FIELD(shift_value)
+    .set_default(dmlc::optional<float>())
+    .describe("A value by which the bias needs to be decreased if shifted_input is true.");
   }
 };
 

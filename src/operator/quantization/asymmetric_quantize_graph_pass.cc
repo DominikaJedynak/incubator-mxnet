@@ -51,6 +51,16 @@ static inline bool IsOneDNNFullyConnected(const ObjectPtr& n) {
   return false;
 }
 
+template <bool require_bias>
+static inline bool IsOneDNNConvolution(const ObjectPtr& n) {
+  if (n->op() == Op::Get("_sg_mkldnn_conv")) {
+    auto const& param = nnvm::get<MKLDNNConvFusionParam>(n->attrs.parsed);
+    return !require_bias || (!param.full_conv_param.conv_param.no_bias &&
+                             n->inputs[conv::kBias].node->is_variable());
+  }
+  return false;
+}
+
 static inline bool IsQuantize(const ObjectPtr& n) {
   if (n->op() == Op::Get("_contrib_quantize_v2")) {
     auto const &param = nnvm::get<QuantizeV2Param>(n->attrs.parsed);
@@ -128,7 +138,7 @@ static inline void ShiftBias(int32_t* bias_ptr_int32, size_t bias_size,
   }
 }
 
-enum class Pattern {QuantizeFc, FcFc, None};
+enum class Pattern {QuantizeFc, FcFc, ConvConv, None};
 
 Pattern FindPattern(const ObjectPtr &node) {
   if (IsOneDNNFullyConnected<true>(node)) {
@@ -136,6 +146,11 @@ Pattern FindPattern(const ObjectPtr &node) {
       return Pattern::QuantizeFc;
     } else if (IsOneDNNFullyConnected<false>(node->inputs[0].node)) {
       return Pattern::FcFc;
+    }
+  }
+  if (IsOneDNNConvolution<true>(node)) {
+    if (IsOneDNNConvolution<false>(node->inputs[0].node)) {
+      return Pattern::ConvConv;
     }
   }
   return Pattern::None;
@@ -221,11 +236,33 @@ void FcFcShiftedQuantization(const ObjectPtr& node, Graph&& g,
   LOG(INFO) << "applied shifted quantization on FC->FC";
 }
 
+void ConvConvShiftedQuantization(const ObjectPtr& second_conv, Graph&& g,
+                                 std::vector<NDArray*>* new_arg_vector,
+                                 std::vector<std::string>* new_arg_names) { // delete args
+  ObjectPtr& first_conv = second_conv->inputs[conv::kData].node;
+
+  first_conv->attrs.dict["shifted_output"] = "True";
+  if (first_conv->op()->attr_parser)
+    first_conv->op()->attr_parser(&(first_conv->attrs));
+
+  second_conv->attrs.dict["shifted_input"] = "True";
+  float min = std::stof(first_conv->attrs.dict.at("min_calib_range"));
+  float max = std::stof(first_conv->attrs.dict.at("max_calib_range"));
+  float scale = GetQuantizeScale(mshadow::kInt8, min, max);
+  float shift_value = scale * -min;
+  second_conv->attrs.dict["shift_value"] = std::to_string(shift_value);  // more efficient way?
+  if (second_conv->op()->attr_parser)
+    second_conv->op()->attr_parser(&(second_conv->attrs));
+
+  LOG(INFO) << "Applied asymmetric quantization on CONV->CONV ";
+}
+
 Graph OneDNNShiftedQuantization(Graph&& g) {
   bool disable_shifted_quant =
       dmlc::GetEnv("MXNET_DISABLE_SHIFTED_QUANTIZATION_OPTIMIZATIONS", true);
   bool quantize_fc = !dmlc::GetEnv("MXNET_DISABLE_SHIFTED_QUANTIZE_FC_OPTIMIZATION", false);
   bool fc_fc = !dmlc::GetEnv("MXNET_DISABLE_SHIFTED_FC_FC_OPTIMIZATION", false);
+  bool conv_conv = !dmlc::GetEnv("MXNET_DISABLE_SHIFTED_CONV_CONV_OPTIMIZATION", false);
   if (!disable_shifted_quant) {
     LOG(INFO) << "Running OneDNN shifted quantization";
   }
@@ -251,6 +288,12 @@ Graph OneDNNShiftedQuantization(Graph&& g) {
           if (fc_fc) {
             FcFcShiftedQuantization(node, std::forward<Graph>(g),
                                     &new_arg_vector, &new_arg_names);
+          }
+          break;
+        case Pattern::ConvConv:
+          if(conv_conv) {
+           ConvConvShiftedQuantization(node, std::forward<Graph>(g),
+                                       &new_arg_vector, &new_arg_names);
           }
           break;
         default:
