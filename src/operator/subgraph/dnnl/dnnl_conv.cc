@@ -168,8 +168,7 @@ void SgDNNLConvOperator::Forward(const OpContext& ctx,
   CHECK_EQ(input_size, idx);
   bool has_bias  = dnnl_param.with_bn || !conv_param.no_bias;
   NDArray data   = inputs[in_data];
-  NDArray output = dnnl_param.with_sum ? inputs[in_sum] : outputs[kOut];
-
+  NDArray output = outputs[kOut];
   // Copy inputs[in_sum] into outputs[kOut] in case inplace optimization failed.
   if (dnnl_param.with_sum) {
     if (!initialized_) {
@@ -293,7 +292,14 @@ void SgDNNLConvOperator::Forward(const OpContext& ctx,
         }
         full_conv_param.requantize_scales.resize(weight_channelwise_scale ? channel : 1);
         for (size_t c = 0; c < full_conv_param.requantize_scales.size(); c++) {
-          full_conv_param.requantize_scales[c] = output_scale / data_scale_ / weight_scales_[c];
+          full_conv_param.requantize_scales[c] = 1.0 / data_scale_ / weight_scales_[c];
+        }
+        if(dnnl_param.with_act) {
+          full_conv_param.act_param.scale = output_scale;
+        } else {
+          for (size_t c = 0; c < full_conv_param.requantize_scales.size(); c++) {
+            full_conv_param.requantize_scales[c] *= output_scale;
+          }
         }
       } else {
         Stream<cpu>* s = ctx.get_stream<cpu>();
@@ -330,13 +336,7 @@ void SgDNNLConvOperator::Forward(const OpContext& ctx,
         if (dnnl_param.with_sum) {
           LOG(ERROR) << "oneDNN doesn't support conv + relu + sum fusion yet.";
           full_conv_param.act_param.alpha *= output_scale;
-        } else {
-          // For conv+relu6 without sum, we don't need post_ops as output_scale can do the cut off.
-          dnnl_param.with_act = false;
         }
-      }
-      if (dnnl_param.with_postsum_act) {
-        CHECK(full_conv_param.postsum_act_param.alg == dnnl::algorithm::eltwise_relu);
       }
     }
     fwd_.reset(new DNNLConvForward(full_conv_param,
